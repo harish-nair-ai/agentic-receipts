@@ -24,7 +24,8 @@
 ## Quick Start
 
 ```bash
-pip install agentic-receipts
+# PyPI release coming soon! Install from GitHub for now:
+pip install git+https://github.com/harish-nair-ai/agentic-receipts.git
 ```
 
 Install the Claude Code hook:

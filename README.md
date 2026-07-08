@@ -78,7 +78,25 @@ Agent Session → Claim Extraction → Evidence Matching → Receipt
 | **Evidence-based verdicts** | ❌ | ⚠️ | ✅ |
 | **Shareable stats** | ❌ | ❌ | ✅ |
 
-## Configuration
+## Installation
+
+Right now, you can install the package directly from GitHub (PyPI release coming soon):
+
+```bash
+pip install git+https://github.com/harish-nair-ai/receipts.git
+```
+
+Install the Claude Code hook:
+
+```bash
+receipts install
+```
+
+## Configuration & API Keys
+
+**You do NOT need an Anthropic API key to run Receipts if you are already using Claude Code.** Claude Code handles its own authentication.
+
+However, Receipts needs an **Independent Judge** to verify Claude's fuzzy claims (like "refactored for clarity"). Because the golden rule of auditing is that the maker and checker shouldn't be the same model, Receipts is configured to use **Google Gemini** by default.
 
 Set your judge provider using environment variables. Receipts auto-detects the first available key.
 
@@ -87,7 +105,7 @@ export GEMINI_API_KEY="AIza..."     # Fast, cheap judge (recommended)
 # OR
 export OPENAI_API_KEY="sk-..."      # Uses gpt-4o-mini by default
 # OR
-export ANTHROPIC_API_KEY="sk-..."   # Uses claude-3-haiku by default
+export ANTHROPIC_API_KEY="sk-..."   # Not recommended if auditing Claude
 ```
 
 To block Claude Code from exiting if there are unverified claims:

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/harish-nair-ai/receipts/main/assets/logo-dark.svg">
-    <img src="https://raw.githubusercontent.com/harish-nair-ai/receipts/main/assets/logo.svg" alt="Receipts" width="400">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/harish-nair-ai/agentic-receipts/main/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/harish-nair-ai/agentic-receipts/main/assets/logo.svg" alt="Receipts" width="400">
   </picture>
 </p>
 
@@ -11,10 +11,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/harish-nair-ai/receipts/actions"><img src="https://img.shields.io/github/actions/workflow/status/harish-nair-ai/receipts/ci.yml?branch=main&label=CI" alt="CI"></a>
-  <a href="https://pypi.org/project/agent-receipts/"><img src="https://img.shields.io/pypi/v/agent-receipts" alt="PyPI"></a>
-  <a href="https://pypi.org/project/agent-receipts/"><img src="https://img.shields.io/pypi/pyversions/agent-receipts" alt="Python"></a>
-  <a href="https://github.com/harish-nair-ai/receipts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/harish-nair-ai/receipts" alt="License"></a>
+  <a href="https://github.com/harish-nair-ai/agentic-receipts/actions"><img src="https://img.shields.io/github/actions/workflow/status/harish-nair-ai/agentic-receipts/ci.yml?branch=main&label=CI" alt="CI"></a>
+  <a href="https://pypi.org/project/agentic-receipts/"><img src="https://img.shields.io/pypi/v/agentic-receipts" alt="PyPI"></a>
+  <a href="https://pypi.org/project/agentic-receipts/"><img src="https://img.shields.io/pypi/pyversions/agentic-receipts" alt="Python"></a>
+  <a href="https://github.com/harish-nair-ai/agentic-receipts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/harish-nair-ai/agentic-receipts" alt="License"></a>
 </p>
 
 ---
@@ -24,7 +24,7 @@
 ## Quick Start
 
 ```bash
-pip install agent-receipts
+pip install agentic-receipts
 ```
 
 Install the Claude Code hook:
@@ -83,7 +83,7 @@ Agent Session → Claim Extraction → Evidence Matching → Receipt
 Right now, you can install the package directly from GitHub (PyPI release coming soon):
 
 ```bash
-pip install git+https://github.com/harish-nair-ai/receipts.git
+pip install git+https://github.com/harish-nair-ai/agentic-receipts.git
 ```
 
 Install the Claude Code hook:

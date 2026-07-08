@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-receipts"
+name = "agentic-receipts"
 version = "0.1.0"
 description = "The verified-done layer for AI coding agents. Your agent says 'Done!' — Receipts checks the work."
 readme = "README.md"
@@ -45,11 +45,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/harish-nair-ai/receipts"
-Documentation = "https://github.com/harish-nair-ai/receipts#readme"
-Repository = "https://github.com/harish-nair-ai/receipts"
-Issues = "https://github.com/harish-nair-ai/receipts/issues"
-Changelog = "https://github.com/harish-nair-ai/receipts/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/harish-nair-ai/agentic-receipts"
+Documentation = "https://github.com/harish-nair-ai/agentic-receipts#readme"
+Repository = "https://github.com/harish-nair-ai/agentic-receipts"
+Issues = "https://github.com/harish-nair-ai/agentic-receipts/issues"
+Changelog = "https://github.com/harish-nair-ai/agentic-receipts/blob/main/CHANGELOG.md"
 
 [project.scripts]
 receipts = "receipts.cli:main"

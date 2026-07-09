@@ -1,163 +1,192 @@
-# Receipts v2 — Calibrated Verifier + The AI Lie Detector
+# Receipts v2 — A Calibrated, Uncertainty-Aware Fact-Checker for AI-Agent Claims
 
-**Status:** Approved (design) — 2026-07-09
+**Status:** Design (in review) — 2026-07-09
 **Author:** Harish Nair S (with Claude)
 **Scope:** One implementation cycle, two phases. Ships on a feature branch → PR (not `main`). No PyPI publish this cycle.
 
+> **Product definition:** Receipts is an automated, calibrated, uncertainty-aware **fact-checker for AI-agent completion claims**. When an agent says "done," Receipts treats each claim like a FEVER fact-verification problem — retrieve evidence, decide **SUPPORTED / REFUTED / NOT-ENOUGH-INFO**, attach a calibrated score and a specific natural-language critique.
+
 ---
 
-## 1. Context
+## 1. Context & the problem (with real numbers)
 
-Receipts v1 is "the verified-done layer for AI coding agents": a zero-config Claude Code Stop hook that extracts completion claims from a session, matches them against deterministic evidence (test exit codes, file writes), and asks an **independent** LLM judge (maker ≠ checker; Gemini by default) for a **discrete** verdict per fuzzy claim (`verified` / `unverified` / `refuted` / `skipped`). Output is a Rich terminal receipt card + local `receipts stats`.
+Receipts v1 is a zero-config Claude Code Stop hook: it extracts completion claims from a session, matches them against deterministic evidence (test exit codes, file writes), and asks an **independent** LLM judge (maker ≠ checker; Gemini by default) for a **discrete** verdict per fuzzy claim. Output is a Rich terminal receipt card + local `receipts stats`.
 
-arXiv **2607.05391** ("LLM-as-a-Verifier") contributes a genuinely useful core we do not yet have: a **calibrated continuous score** and three orthogonal **inference-time scaling dimensions** that make that score more reliable. We validated the paper against its released code (`llm-as-a-verifier/llm-as-a-verifier`):
+**The problem is real, large-scale, measured, and getting relatively worse.** The 20,574-session study *"How Coding Agents Fail Their Users"* (arXiv 2605.29442; 16,118 validated misalignment episodes, 93% precision) found:
 
-- **Implemented & reusable:** continuous score from logprob expectation (Eq 3.1), score-granularity scale (A–T, 20 levels), repeated-evaluation averaging (K passes), criteria decomposition (coding triad: Specification / Output Match / Error-Signal Detection), and a Probabilistic Pivot Tournament (PPT) for cheap best-of-N ranking (Bradley-Terry pivots, O(Nk)).
-- **Paper-only / weak for us — dropped:** the RL reward-shaping section ships **zero** code; "TurboAgent" is a FastAPI reverse proxy (via `ANTHROPIC_BASE_URL`) that **multiplies inference cost by N** — not a real hook/plugin. We take neither.
+- **"Inaccurate Self-Reporting" = 22.58% of all misalignment episodes** — agents prematurely claiming success/completion without verification (the 3rd-largest failure category).
+- **False success claims are *rising* in relative share** — "training improvements address code correctness more effectively than behavioral adherence or honest self-assessment." Models get better at coding, **not** at honestly reporting done.
+- **91.49% of resolutions required a human to intervene** — the human is currently the only verifier. That's the labor Receipts automates.
 
-**Our unique wedge (not in the paper):** zero-config *consumer* distribution + maker ≠ checker discipline + a genuinely organic viral mechanic. The paper builds a verifier for researchers; we build a verified-done *product* for every coding-agent user — and we make the moment it fires inherently shareable.
+The market thesis (2026 landscape): *"The core bottleneck is no longer code generation speed. It is verification capacity."* Anthropic itself now recommends our exact pattern — a deterministic hook for hard claims plus a separate model pass for ambiguous ones — but as **DIY guidance, not a zero-config product.** That gap is the opening.
 
-### Positioning: the AI lie detector (gotcha-forward)
+> **Note (v1 correctness debt):** the README's "~47% of the time" figure is unsourced. Replace it during implementation with the citable **22.58%** (S7, arXiv 2605.29442) or the 42%-false-positive case study. Tracked in §14.
 
-The viral object is **not** a personal score card (nobody screenshots their own report card) and **not** a user-vs-user leaderboard (vanity noise). Validated against how OpenClaw and HeyClicky actually went viral, the law is: *the shareable object is the product doing something jaw-dropping during real use, that the user captures because it makes them look interesting — never a badge we ask them to post.*
+---
 
-Receipts' jaw-drop moment is **catching the AI lying, at the instant of maximum surprise** — riding the hottest current narrative ("AI agents confidently claim done, then haven't"). Two viral surfaces, both organic:
+## 2. Evidence base & technique fusion
 
-1. **The "caught red-handed" receipt** — when a confident claim is refuted, the receipt is rendered as *evidence*, engineered to be screenshot-worthy. The hero cases are the claims **no script can check**: `Agent: "✅ Added input validation + improved error handling, done." → 🧾 REFUTED (score 18/100) — no try/except or validation added to the diff; the only new code is a print statement.` The calibrated scorer is what makes this a **defensible** accusation (every gotcha backed by evidence + a calibrated score), not a cheap dunk. Deterministic cases (`pytest exit 1`) are the *floor*, not the pitch — see §2.5.
-2. **The AI Agent Honesty Index** — aggregate, opt-in, **agent-vs-agent** leaderboard: which coding agents most often falsely claim "done" (Claude Code vs Cursor vs Copilot vs Codex …). A controversial *industry* stat people quote-tweet — an ongoing data-journalism story and a data moat (only Receipts watches real sessions). Never user-vs-user.
+A real product mixes multiple validated techniques. Every layer below is independently grounded (full citations in §16).
 
-Launch asset = a HeyClicky-style ~104-second clip: a real agent says "done, all green," Receipts instantly flashes ❌ REFUTED. Product copy and README carry the same lie-detector voice, kept credible by the evidence-first scoring.
+| Layer | Source(s) | Contribution |
+|---|---|---|
+| Calibrated continuous score (logprob expectation over an A–T 20-level scale), K repeated passes, criteria decomposition, PPT best-of-N | **2607.05391** (base paper) + released code | The scoring engine and inference-time scaling dimensions |
+| Probabilistic (expectation) scoring **beats discrete** on judge sensitivity | RewardBench 2 result via LLM-judge surveys | Justifies replacing the discrete verdict with a calibrated score |
+| **Claim-as-fact-verification**: retrieve→verify, three labels SUPPORTED / REFUTED / **NOT-ENOUGH-INFO** | **FEVER** (1803.05355), NLI/SummaC/FactCC faithfulness lineage | Rigorous backbone; NEI = our honest abstention; groundedness = our evidence layer |
+| **Independent critic > self-review** (catches bugs humans miss, preferred >80%) | **CriticGPT** — "LLM Critics Help Catch LLM Bugs" (2407.00215) | Empirical validation of maker ≠ checker; motivates a NL critique on every receipt |
+| **Self-critique collapses; external verification gains** | 2310.01798, 2509.17995 | Why the checker must be external; why Phase-2 external ranking of fixes works |
+| **Uncertainty-aware verification, abstention, cost cascades** | Overconfidence-in-judge (2508.06225), abstention (2510.24020), cascades (2506.11887), confidence-gated verification (2602.18447) | Variance = confidence signal → adaptive K + abstain-over-guess (meta-honesty) |
+| **Weak-verifier ensemble** shrinks the generation–verification gap | 2506.18203 | Principled combination of criteria + deterministic evidence |
+
+**Dropped from the base paper** (validated as weak for us): the RL reward-shaping section ships **zero** code; "TurboAgent" is a FastAPI reverse proxy (`ANTHROPIC_BASE_URL`) that **multiplies inference cost by N** — not a real hook/plugin. We take neither.
+
+---
+
+## 3. Positioning: the AI lie detector — that never lies
+
+Voice and narrative: **the lie detector for AI coding agents** (rides the documented, rising "agents falsely claim done" pain). But the credibility of a lie detector is destroyed the moment it makes a false accusation. So the defining product property is **meta-honesty**:
+
+- Three-way verdict with **real abstention** — when evidence is insufficient, Receipts says **NOT-ENOUGH-INFO**, never a forced accusation. Grounded in FEVER's NEI label + the abstention literature.
+- Every REFUTED verdict is backed by a calibrated score **and** a specific critique pointing at the contradicting evidence — a *defensible* accusation (CriticGPT-style), not a vibe.
+
+**Growth = utility + a show-don't-tell launch, not a share button.** The research says the edge is solving a real, measured, expensive problem; virality (if any) is organic — the terminal card is good enough that people screenshot it themselves. We do **not** build a share/badge feature (see §4, §10).
+
+---
+
+## 4. Goals / Non-Goals
 
 ### Goals
-- Replace the discrete judge with a **calibrated continuous score** per claim and an aggregate **Verified-Done Score (0–100)** per session, backed by the paper's scaling dimensions — the credibility engine behind every gotcha.
-- Preserve **zero-config**: if calibrated logprobs are unavailable, degrade gracefully to a sampled score — never crash, never require setup.
-- Make the **refutation moment** shareable: `receipts share` (PNG "caught red-handed" receipt), `receipts badge` (SVG), and **opt-in** `receipts publish` (aggregate-only) feeding the **AI Agent Honesty Index**.
-- **Phase 2:** self-healing — on a refuted claim, generate candidate fixes, rank with PPT, present the winning diff, opt-in auto-apply.
+- Replace the discrete judge with a **calibrated continuous score** per claim and a **three-way calibrated verdict** (SUPPORTED / REFUTED / NOT-ENOUGH-INFO), backed by the technique stack in §2.
+- **Meta-honesty:** abstain instead of guessing when confidence is low; every REFUTED carries a specific critique.
+- **Adaptive inference-time scaling:** variance-gated K (cheap on clear claims, thorough on ambiguous), criteria decomposition as a weak-verifier ensemble.
+- Preserve **zero-config**: graceful fallback when calibrated logprobs are unavailable — never crash, never require setup.
+- **Phase 2:** self-healing — on a REFUTED claim, generate candidate fixes, rank with PPT via the external verifier, present the winning diff, opt-in auto-apply.
 
 ### Non-Goals (YAGNI / explicitly dropped)
-- No RL / DSRL-SAC / GRPO reward shaping (no released code; out of product scope).
+- No RL / DSRL-SAC / GRPO reward shaping (no released code).
 - No reverse-proxy / `ANTHROPIC_BASE_URL` interception / cost-multiplying "turbo" mode.
-- No React/Vite dashboard. Terminal card + static Honesty Index page only.
-- **No user-vs-user leaderboard, no "share your score" as the hook.** The score exists to make gotchas credible; virality comes from the refutation moment and the agent-vs-agent index.
+- No React/Vite dashboard.
+- **No `receipts share` (PNG) and no `receipts badge`.** Manufactured virality, no evidence of value, maintenance cost. The terminal card is the organic shareable artifact.
+- **Honesty Index is out of core scope** — demoted to an optional post-launch data-moat track (§11). It does not gate or shape the architecture this cycle.
 - No PyPI publish this cycle. No push to `main` — feature branch + PR only.
-- Honesty Index stores **aggregate numbers only**, never transcript content (see §7).
 
 ---
 
-## 2. Architecture Overview
+## 5. Architecture overview (science-mapped pipeline)
 
 ```text
 Session transcript
-   → Claim Extraction        (claims.py, unchanged)
-   → Evidence Matching       (evidence.py, unchanged — free hard evidence)
-   → Calibrated Scorer       (scorer.py  ← NEW, replaces judge.py's discrete verdict)
-        ├─ Criteria decomposition   (criteria.py + criteria/*.md ← NEW)
-        ├─ Continuous score via A–T logprob expectation (Eq 3.1)
-        ├─ K repeated passes, averaged
-        └─ Graceful sampled fallback when logprobs unavailable
-   → Receipt (score card)     (render.py, upgraded)
-   → Local store + stats      (stats.py, extended with numeric score)
-   → [opt-in] share / badge / publish
+  → Claim Extraction            (claims.py, unchanged)        [FEVER: claim identification]
+  → Evidence Matching           (evidence.py, unchanged)      [FEVER: retrieval / groundedness]
+  → Verifier core (per claim)   (verifier.py ← NEW)
+       1. Deterministic entailment fast-path
+            hard evidence directly contradicts/supports? → decide with certainty, no LLM
+       2. Calibrated independent scorer     (scorer.py ← NEW)
+            A–T logprob expectation (Eq 3.1) over criteria (Spec/Output/Error = weak-verifier ensemble)
+            → continuous score + NL critique (CriticGPT-style)
+       3. Uncertainty control       (adaptive K; abstain → NOT-ENOUGH-INFO on low confidence)
+       → three-way calibrated verdict + score + critique
+  → Receipt card                 (render.py, upgraded)
+  → Local store + stats          (stats.py, extended)
 
 Phase 2 (self-healing):
-   Refuted claim → generate N candidate fixes → decomposed scorer on each
-        → PPT best-of-N select (pivot_tournament.py ← NEW)
-        → present winning diff → [opt-in] auto-apply (retry.py ← NEW)
+  REFUTED claim → generate N candidate fixes → external verifier scores each
+       → PPT best-of-N select (pivot_tournament.py ← NEW)
+       → present winning diff → [opt-in] auto-apply (retry.py ← NEW)
+
+Optional post-launch:
+  [opt-in] aggregate publish → AI Agent Honesty Index (§11)
 ```
 
-Maker ≠ checker is enforced at the scorer boundary: the checker model must differ from the agent under audit (Claude Code). Default checker is an OpenAI-compatible logprob-capable model, with Vertex-Gemini support; Anthropic is allowed only when the audited agent is not Anthropic.
-
-### 2.5 Why not just a native hook?
-
-Receipts *is* installed as a Claude Code Stop hook — the hook is the **delivery mechanism**, not the product. The obvious objection is "a 5-line `pytest --exit-code` hook already blocks on failing tests." True — and that is the *floor*, the deterministic ~20% of claims, not the pitch. The defensibility line:
-
-| | Naive self-check hook | **Receipts** |
-|---|---|---|
-| **Verifies…** | a thing *you* remembered to script | the **claims the agent actually made**, extracted per session |
-| **Fuzzy claims** ("refactored", "improved error handling", "added validation") | ❌ no exit code exists | ✅ calibrated independent auditor scores them |
-| **No test suite / unknown command** | ❌ nothing to run | ✅ claim-driven evidence matching still works |
-| **Independence** | maker == checker (agent self-certifies — the failure mode itself) | ✅ maker ≠ checker enforced |
-| **Aggregate signal** | invisible, per-project | ✅ cross-session/-agent **Honesty Index** |
-| **Setup** | write & maintain per repo | ✅ `pip install` + `receipts install`, zero-config, any repo |
-
-The unit of value is **the gap between what the agent said and what it did** — most of which (fuzzy claims, repos without tests, self-certification blind spots) no native hook can close. Receipts is the claim-auditing intelligence layer *on top of* the hook primitive.
+`judge.py` is refactored into the new `verifier.py`/`scorer.py` path; its discrete-verdict logic survives only as the deepest fallback rung (§8.5). Maker ≠ checker is enforced at the verifier boundary: the checker model must differ from the audited agent. Default checker is an OpenAI-compatible logprob-capable model, with Vertex-Gemini support; Anthropic is allowed only when the audited agent is not Anthropic.
 
 ---
 
-## 3. Phase 1 — Calibrated Verifier + Shareable Score
+## 6. Why not just a native hook?
 
-### 3.1 `scorer.py` (NEW) — continuous calibrated score
+Receipts *is* installed as a Claude Code Stop hook — the hook is the **delivery mechanism**, not the product. "A 5-line `pytest --exit-code` hook already blocks on failing tests" is true for the deterministic ~20% (our §8.1 fast-path), and that is the *floor*, not the pitch.
 
-Replaces `judge.py`'s discrete verdict as the primary path. `judge.py` stays as the fallback discrete judge (see 3.4).
+| | Naive self-check hook | **Receipts** |
+|---|---|---|
+| Verifies… | a thing *you* remembered to script | the **claims the agent actually made**, per session (FEVER-style) |
+| Fuzzy claims ("refactored", "improved error handling", "added validation") | ❌ no exit code exists | ✅ calibrated independent verifier + critique |
+| No test suite / unknown command | ❌ nothing to run | ✅ claim-driven evidence matching still works |
+| Independence | maker == checker (self-critique **collapses** — 2310.01798) | ✅ maker ≠ checker (CriticGPT-validated) |
+| Honesty about its own limits | forced pass/fail | ✅ abstains to NOT-ENOUGH-INFO |
+| Setup | write & maintain per repo | ✅ `pip install` + `receipts install`, zero-config |
 
-**Score model (paper Eq 3.1).** The checker is prompted to emit a single scoring token on a fixed 20-level ordinal scale (letters `A`…`T`, `A` = worst / fully refuted, `T` = best / fully verified). We request `top_logprobs` (≤20) on that token position and compute the calibrated score as the probability-weighted expectation over the returned candidates:
+The unit of value is **the gap between what the agent said and what it did** — most of which no native hook can close.
+
+---
+
+## 7. Phase 1 — the verifier
+
+## 8. Components (Phase 1)
+
+### 8.1 Deterministic entailment fast-path (`verifier.py`, NEW)
+Before any LLM call: if hard evidence directly decides the claim, decide with certainty and skip the model. `pytest`/`npm test`/`cargo`/`go`/`jest` exit ≠ 0 contradicting an "all tests pass" claim → **REFUTED** (score clamped to 0). A matching diff/file-write fully supporting a "created file X" claim → **SUPPORTED** (score 100). This is the cheap, exact FEVER-retrieval case and the "floor" a native hook also covers. Only ambiguous claims reach the LLM.
+
+### 8.2 `scorer.py` (NEW) — calibrated continuous score
+For claims the fast-path can't decide, the independent checker emits a single scoring token on a fixed 20-level ordinal scale (`A`…`T`, A = fully refuted, T = fully supported). We request `top_logprobs` (≤20) and compute the calibrated score as the probability-weighted expectation (paper Eq 3.1; mirrors `fine_grained_reward.py::extract_score`):
 
 ```
 score01 = Σ_i (value(tok_i) · p_i) / Σ_i p_i      # renormalized over returned candidates
+value(letter) = (ord(letter) − ord('A')) / 19     # A→0.0 … T→1.0 ; p_i = exp(logprob_i)
 ```
 
-where `value(letter) = (ord(letter) − ord('A')) / 19` maps A→0.0 … T→1.0, and `p_i = exp(logprob_i)`. Per-claim score is reported 0–100. This mirrors `fine_grained_reward.py::extract_score` in the reference repo.
+Reported 0–100 per claim. The checker also returns a short **natural-language critique** (CriticGPT-style) naming the specific supporting/contradicting evidence. `G = 20` is a constant (matches released code; not user-tunable this cycle).
 
 **Interface:**
 ```python
 @dataclass
-class ClaimScore:
+class ClaimVerdict:
     claim: Claim
-    score: float               # 0..100 calibrated
-    verdict: Verdict           # discretized band (see 3.5) for card glyphs
-    per_criterion: dict[str, float]   # criterion name -> 0..100
-    method: ScoreMethod        # LOGPROB | SAMPLED (fallback)
-    passes: int                # K actually run
-    reasoning: str
+    label: FactLabel            # SUPPORTED | REFUTED | NOT_ENOUGH_INFO
+    score: float                # 0..100 calibrated
+    confidence: float           # 0..1 from cross-pass agreement + logprob dispersion
+    per_criterion: dict[str, float]
+    critique: str               # specific NL critique / evidence pointer
+    method: ScoreMethod         # LOGPROB | SAMPLED
+    passes: int                 # K actually run (adaptive)
 
-def score_claim(claim, evidence, transcript_context, config) -> ClaimScore: ...
-def score_session(claims, evidence, transcript_context, config) -> SessionScore: ...
+def verify_claim(claim, evidence, transcript_context, config) -> ClaimVerdict: ...
+def verify_session(claims, evidence, transcript_context, config) -> SessionReport: ...
 ```
 
-`SessionScore` aggregates per-claim scores into the **Verified-Done Score (0–100)** (evidence-weighted mean; deterministically-refuted claims, e.g. `pytest` exit ≠ 0, hard-clamp their claim score toward 0 regardless of checker output).
-
-### 3.2 Scaling dimension — repeated evaluation (K)
-Run the scorer `K` times (default `K=3`, `RECEIPTS_SCORE_PASSES` override) and average `score01`. Cheap variance reduction from the paper. `K=1` when a fast/cheap mode is requested. Passes run concurrently.
-
-### 3.3 Scaling dimension — criteria decomposition (`criteria.py` + `criteria/*.md`)
-For code claims, score three sub-criteria (paper's coding triad) and combine:
-- `specification.md` — does the change match what was asked / claimed?
+### 8.3 Criteria decomposition as a weak-verifier ensemble (`criteria.py` + `criteria/*.md`, NEW)
+For code claims, score three sub-criteria (paper's coding triad; framed as a weak-verifier ensemble per 2506.18203):
+- `specification.md` — does the change match what was asked/claimed?
 - `output_match.md` — does observed output/behavior match the claim?
 - `error_signal.md` — are there error signals (failing tests, tracebacks, non-zero exits) contradicting the claim?
 
-Each criterion is an independent prompt fragment (Markdown, shipped in-package). `criteria.py` selects the criteria set by `ClaimType`, runs each through the scorer, and combines (min-biased for error-signal so one strong contradiction can sink an over-optimistic claim). Non-code / generic claims use a single holistic criterion. Criteria files are data, versioned in-repo, referenced by name.
+Each criterion is an independent Markdown prompt fragment shipped in-package. `criteria.py` selects the set by `ClaimType`, runs each through the scorer, and combines (error-signal is min-biased so one strong contradiction sinks an over-optimistic claim). Non-code/generic claims use a single holistic criterion.
 
-### 3.4 Graceful fallback (zero-config guarantee)
+### 8.4 Uncertainty control: adaptive K + abstention
+- **Adaptive K** (cascade / confidence-gated): run 1 pass; if cross-pass/criterion variance or logprob dispersion exceeds a threshold, escalate up to `K_max` (default 3, `RECEIPTS_SCORE_PASSES`). Cheap on clear claims, thorough on ambiguous ones. Passes run concurrently when escalated.
+- **Abstain over guess:** map `confidence` (from cross-pass agreement + logprob dispersion) — when it is below `RECEIPTS_MIN_CONFIDENCE`, output **NOT_ENOUGH_INFO** regardless of the point score. This is the meta-honesty guarantee: no forced accusations.
+- Score → label bands (applied only when not abstaining): `≥ 85` SUPPORTED · `< 45` REFUTED · in-between → NOT_ENOUGH_INFO. Deterministic fast-path decisions override bands.
+
+### 8.5 Graceful fallback (zero-config guarantee)
 Logprobs require Vertex Gemini or an OpenAI-compatible endpoint exposing `top_logprobs ≤ 20`; **Anthropic exposes no logprobs**. Resolution order per session:
 1. Checker supports logprobs → **LOGPROB** method (calibrated expectation).
-2. Checker has no logprobs (e.g. Anthropic-only key) → **SAMPLED** method: request the scoring letter at low temperature over a few samples and average their numeric values. Lower fidelity, clearly labeled on the card (`method: sampled`), still continuous, still zero-config.
-3. No checker key at all → deterministic-evidence-only receipt (v1 behavior for hard claims; fuzzy claims marked `skipped`). Never crash.
+2. No logprobs (e.g. Anthropic-only key) → **SAMPLED** method: sample the scoring letter at low temperature a few times, average numeric values. Lower fidelity, labeled `sampled` on the card, still continuous.
+3. No checker key → deterministic-evidence-only receipt (fast-path decides hard claims; fuzzy claims → NOT_ENOUGH_INFO). Never crash.
 
-The score granularity `G` (20) is a constant, matching the released code (not user-tunable this cycle).
+### 8.6 Upgraded receipt card (`render.py`)
+Header shows the aggregate **Verified-Done Score: NN/100** and counts of ✅ supported / ❌ refuted / ❔ not-enough-info. Per claim: label glyph, continuous score, the critique one-liner, per-criterion mini-bars for code claims, and a `method` tag (`calibrated` vs `sampled`). Keeps the existing Rich box aesthetic; REFUTED rows are rendered as evidence (verbatim claim → contradiction) so the card is inherently screenshot-worthy without a separate share tool.
 
-### 3.5 Verdict banding (card compatibility)
-Continuous score maps to glyphs for the card: `≥ 85` ✅ verified · `55–84` ⚠️ weak/unverified · `< 55` ❌ refuted. Deterministic refutation forces ❌. Bands are display-only; the stored value is the continuous score.
-
-### 3.6 Upgraded receipt card (`render.py`)
-Card shows the **Verified-Done Score: NN/100** in the header, per-claim continuous scores with glyph + one-line reason, per-criterion mini-bars for code claims, and a `method` tag (`calibrated` vs `sampled`). Keeps the existing Rich box aesthetic.
-
-### 3.7 Sharing & distribution (gotcha-forward)
-- `receipts share [session]` → renders the **"caught red-handed" receipt** to a **PNG**, optimized as a social artifact: the agent's verbatim confident claim above the ❌ REFUTED verdict + score + the specific contradicting evidence. Prioritizes refuted fuzzy claims (the shareable ones) over deterministic ones. Self-contained; nothing leaves the machine unless the user posts it. This is the organic viral unit.
-- `receipts badge` → **SVG** badge (shields-style) for READMEs — but framed as an *honesty* signal (e.g. "verified-done", not a vanity number).
-- `receipts publish` → **opt-in**, sends **aggregate numbers only** — keyed by **audited-agent identity** (e.g. `claude-code`, `cursor`, `copilot`) — false-done rate, verification rate, checker model name, claim/session counts. **Never** sends transcript text, claim text, code, paths, or prompts. Explicit first-run consent; off by default. Feeds the Honesty Index (§3.8).
-
-### 3.8 The AI Agent Honesty Index (thin, static, agent-vs-agent)
-Cloudflare Worker + KV store + a static HTML page ranking **coding agents by how often they falsely claim "done"** — never users. Worker accepts the aggregate payload (validated, size-capped, no free-text pass-through), aggregates per audited-agent identity across all opt-in contributors, and serves a read-only ranked "honesty leaderboard." No accounts; an anonymous local contributor id used only for dedup/rate-limiting, never displayed or ranked. This is the only server-side component and the data moat — an ongoing, quote-tweetable industry stat only Receipts can produce.
+### 8.7 `stats.py`
+Persist continuous `score`, `label`, `confidence`, `method`, `passes` alongside existing fields. `receipts stats` reports numeric aggregates. Backward-compatible: old records without these are treated as verdict-only.
 
 ---
 
-## 4. Phase 2 — Self-Healing (headline follow-on)
+## 9. Phase 2 — self-healing (headline follow-on)
 
-Triggered on a **refuted** claim (score below the refuted band or deterministic contradiction).
+Triggered on a **REFUTED** claim (not on NOT_ENOUGH_INFO — we don't "fix" what we're unsure about).
 
-1. **Generate** N candidate fixes (default N=3) from the refuting evidence + relevant transcript slice, using the checker-side model (still maker ≠ original agent for the *evaluation*; generation model configurable).
-2. **Score** each candidate through the decomposed scorer (§3.3).
-3. **Select** best-of-N with **PPT** (`pivot_tournament.py`, NEW) — Bradley-Terry pivots `1/(1+exp(-(ra−rb)))`, `DEFAULT_PIVOTS=2`, O(Nk); ported from `pivot_tournament.py` in the reference repo.
+1. **Generate** N candidate fixes (default 3) from the refuting evidence + relevant transcript slice.
+2. **Score** each candidate through the external verifier (§8.2–8.3). External ranking is what makes this work — self-correction alone collapses (2310.01798); the generation–verification gap is closed by an independent verifier (2506.18203).
+3. **Select** best-of-N with **PPT** (`pivot_tournament.py`, NEW) — Bradley-Terry pivots `1/(1+exp(-(ra−rb)))`, `DEFAULT_PIVOTS=2`, O(Nk); ported from the reference repo. Pairwise ranking also sidesteps the known instability of pointwise scores.
 4. **Present** the winning candidate as a unified diff in the receipt.
 5. **Apply** only on **opt-in** (`RECEIPTS_AUTOFIX=1` or interactive confirm). Never auto-writes by default.
 
@@ -165,61 +194,82 @@ Triggered on a **refuted** claim (score below the refuted band or deterministic 
 
 ---
 
-## 5. Data Model Changes (`models.py`)
-- Add `ScoreMethod` enum (`LOGPROB`, `SAMPLED`).
-- Add `ClaimScore` and `SessionScore` (or dataclasses in `scorer.py` importing existing enums — keep Pydantic where persisted).
-- Persist continuous `score` (0–100), `method`, and `passes` alongside existing verdict fields in the local store so `stats` and `badge` can aggregate numerically. Backward-compatible: old records without `score` are treated as verdict-only.
-- Extend `EvidenceSource` only if needed for candidate-fix provenance in Phase 2.
+## 10. Data model changes (`models.py`)
+- Add `FactLabel` enum (`SUPPORTED`, `REFUTED`, `NOT_ENOUGH_INFO`) and `ScoreMethod` (`LOGPROB`, `SAMPLED`). Keep the existing `Verdict` for back-compat mapping.
+- Add `ClaimVerdict` / `SessionReport` (dataclasses in `verifier.py`; Pydantic where persisted).
+- Persist `score`, `label`, `confidence`, `method`, `passes`. Backward-compatible with v1 records.
 
 ---
 
-## 6. Configuration
-- `RECEIPTS_SCORE_PASSES` (default 3) — K repeated passes.
+## 11. Optional post-launch: AI Agent Honesty Index (out of core scope)
+The one piece with a genuine **data moat** (only Receipts holds cross-agent claim-verification data) and a science-backed angle: a **longitudinal benchmark** tracking the documented "false-reporting is rising" trend, per audited agent (Claude Code vs Cursor vs Copilot vs Codex), **agent-vs-agent, never user-vs-user**. Thin Cloudflare Worker + KV + a static ranked page; `receipts publish` sends **aggregate numbers only**, keyed by audited-agent identity (a known enum, not free text), opt-in and off by default. **Not built this cycle** — listed so the data model (§10) stays forward-compatible. Revisit only after the core verifier ships and is genuinely useful.
+
+---
+
+## 12. Configuration
+- `RECEIPTS_SCORE_PASSES` (default 3) — `K_max` for adaptive escalation.
+- `RECEIPTS_MIN_CONFIDENCE` (default e.g. 0.6) — abstention threshold.
 - `RECEIPTS_CHECKER_MODEL` / existing provider auto-detection — checker selection; enforce maker ≠ checker.
 - `RECEIPTS_AUTOFIX` (default 0) — Phase 2 opt-in apply.
-- `RECEIPTS_PUBLISH` / first-run consent — opt-in Honesty Index contribution.
-- `RECEIPTS_BLOCK` (existing) — block exit on unverified.
-- Fast mode (`K=1`, single criterion) for latency-sensitive users.
+- `RECEIPTS_BLOCK` (existing) — block exit on refuted/unverified.
+- Fast mode (K=1, single criterion) for latency-sensitive users.
 
 ---
 
-## 7. Privacy & Safety (hard constraints)
-- **Local-first.** All scoring and receipts are computed and stored locally. Nothing is transmitted unless the user runs an opt-in command.
-- **`publish` is aggregate-only.** Payload schema is a fixed set of numbers + the audited-agent identity + the checker model name + an anonymous contributor id. The Worker rejects any field outside the schema; there is no free-text field. Transcript, claim text, code, file paths, and prompts are **never** sent. The audited-agent identity is a known enum (`claude-code`, `cursor`, …), not free text.
-- **Consent is explicit and off by default.** First `publish` requires an interactive opt-in; a config flag records it.
-- **maker ≠ checker** is enforced in code; the audited agent's provider cannot be the checker.
+## 13. Privacy & safety (hard constraints)
+- **Local-first.** All verification and receipts are computed and stored locally. Nothing is transmitted unless the user runs an opt-in command.
+- **maker ≠ checker** enforced in code; the audited agent's provider cannot be the checker.
+- **(If the Honesty Index is ever built)** publish is **aggregate-only** — a fixed schema of numbers + audited-agent enum + checker model name + anonymous contributor id; Worker rejects any out-of-schema field; transcript/claim text/code/paths/prompts are **never** sent; explicit opt-in, off by default.
 - **No PyPI publish, no push to `main`** this cycle.
 
 ---
 
-## 8. Testing Strategy
-- **Scorer math:** unit-test Eq 3.1 expectation on synthetic logprob distributions (known inputs → known score), including renormalization and single-candidate edge cases.
-- **Fallback ladder:** simulate logprob-capable, sampled-only, and no-key configs → assert method selection and no-crash behavior.
-- **Criteria decomposition:** assert criterion selection per `ClaimType` and min-biased error-signal combination (a strong error signal sinks an optimistic claim).
-- **Determinism clamp:** `pytest` exit ≠ 0 forces ❌ regardless of checker output.
-- **PPT:** ranking correctness on synthetic rating vectors; O(Nk) pivot count.
-- **Privacy:** unit-test the `publish` payload builder emits only whitelisted numeric/id fields (golden-schema test); Worker rejects extra fields.
-- **End-to-end (per global guidance):** reproduce a real Claude Code session end-to-end — a genuinely refuted "all tests pass" claim — and assert the receipt score, card, and (Phase 2) proposed diff, before trusting unit tests alone.
+## 14. Testing strategy
+- **Scorer math:** unit-test Eq 3.1 expectation on synthetic logprob distributions (known inputs → known score), incl. renormalization and single-candidate edges.
+- **Three-way labeling + abstention:** assert low-confidence inputs → NOT_ENOUGH_INFO; high-agreement supporting/contradicting → SUPPORTED/REFUTED. This is the meta-honesty guarantee — cover it hard.
+- **Adaptive K:** clear claim resolves in 1 pass; high-variance claim escalates to `K_max`.
+- **Deterministic fast-path:** `pytest` exit ≠ 0 → REFUTED without an LLM call; full file-write support → SUPPORTED.
+- **Criteria ensemble:** selection per `ClaimType`; a strong error signal sinks an optimistic claim.
+- **Fallback ladder:** logprob-capable / sampled-only / no-key configs → correct method, no crash.
+- **PPT:** ranking correctness on synthetic ratings; O(Nk) pivot count.
+- **README stat fix:** verify the "47%" is replaced with the cited 22.58% (arXiv 2605.29442).
+- **End-to-end (per global guidance):** reproduce a real Claude Code session with a genuinely refuted "all tests pass" claim and a genuinely ambiguous "improved error handling" claim; assert REFUTED-with-critique and NOT_ENOUGH_INFO respectively, plus the Phase-2 proposed diff — before trusting unit tests alone.
 
 ---
 
-## 9. Build Plan (agent allocation)
-Token-heavy implementation is delegated to **Sonnet** agents on isolated branches/worktrees; **Fable 5** is reserved only for the go/no-go calibration review and for un-sticking a stuck agent (high-stakes, expensive).
+## 15. Build plan (agent allocation)
+Token-heavy implementation → **Sonnet** agents on isolated branches/worktrees; **Fable 5** reserved only for the go/no-go calibration review and un-sticking a stuck agent (high-stakes, expensive).
 
-- **Agent A (Sonnet):** `scorer.py` + Eq 3.1 math + `ScoreMethod` model changes + fallback ladder + scorer unit tests.
-- **Agent B (Sonnet):** `criteria.py` + `criteria/*.md` triad + combination logic + tests.
-- **Agent C (Sonnet):** `render.py` card upgrade + `share` (PNG) + `badge` (SVG) CLI.
-- **Agent D (Sonnet):** Honesty Index Worker + KV + static agent-vs-agent page + `publish` opt-in client (aggregate, agent-keyed) + privacy/schema tests.
-- **Agent E (Sonnet, Phase 2):** `pivot_tournament.py` + `retry.py` + self-healing flow + tests.
-- **Fable 5 checkpoint:** review calibrated-score correctness and maker≠checker/privacy enforcement before the PR; intervene on any stuck agent.
+- **Agent A (Sonnet):** `verifier.py` (fast-path + three-way labeling + adaptive K + abstention) + `scorer.py` (Eq 3.1 math) + `FactLabel`/`ScoreMethod` model changes + fallback ladder + unit tests.
+- **Agent B (Sonnet):** `criteria.py` + `criteria/*.md` triad + weak-verifier combination + tests.
+- **Agent C (Sonnet):** `render.py` card upgrade (three-way + critique + per-criterion bars) + `stats.py` numeric aggregates + README "47%" fix.
+- **Agent D (Sonnet, Phase 2):** `pivot_tournament.py` + `retry.py` + self-healing flow + tests.
+- **Fable 5 checkpoint:** review calibration correctness, abstention thresholds, and maker ≠ checker enforcement before the PR; intervene on any stuck agent.
 
 Integration: each agent branches from the feature branch; results merged and run through the end-to-end test before opening the PR against `harish-nair-ai/agentic-receipts` (PR, not `main`).
 
 ---
 
-## 10. Risks & Mitigations
-- **Logprob availability varies by provider/endpoint.** → Fallback ladder (§3.4); label method on card; never require setup.
-- **Calibration drift across checker models.** → Fixed 20-level scale + renormalization; Fable 5 go/no-go review on real sessions.
-- **Latency from K× and criteria×.** → Concurrency; fast mode (K=1, single criterion).
-- **Privacy regression in `publish`.** → Golden-schema test + Worker-side field rejection; off by default.
-- **Scope creep back toward the paper's RL/proxy.** → Explicitly dropped in Non-Goals; do not re-introduce.
+## 16. Risks & mitigations
+- **Pointwise score instability** (documented). → K-averaging + logprob expectation stabilize pointwise; PPT (pairwise) for Phase-2 ranking; abstain on high variance.
+- **Judge overconfidence** (2508.06225). → confidence from cross-pass agreement + logprob dispersion, not the model's self-reported confidence; abstention threshold.
+- **Logprob availability varies.** → fallback ladder (§8.5); label method on card; never require setup.
+- **Calibration drift across checker models.** → fixed 20-level scale + renormalization; Fable 5 go/no-go on real sessions.
+- **Latency from K× and criteria×.** → adaptive K (most claims resolve in 1 pass) + concurrency + fast mode.
+- **Meta-honesty regression (false accusation).** → three-way labeling + abstention tests are first-class (§14).
+- **Scope creep back to RL/proxy/share-features.** → explicitly dropped in §4; do not re-introduce.
+
+---
+
+## 17. References
+- **2607.05391** — LLM-as-a-Verifier (base paper: calibrated logprob expectation, scaling dimensions, PPT). Released code: `llm-as-a-verifier/llm-as-a-verifier`.
+- **2605.29442** — How Coding Agents Fail Their Users: 20,574-session misalignment analysis (22.58% inaccurate self-reporting; rising trend).
+- **1803.05355** — FEVER: Fact Extraction and VERification (SUPPORTED/REFUTED/NOT-ENOUGH-INFO; retrieve→verify). Related: FactCC, QAGS, SummaC faithfulness.
+- **2407.00215** — LLM Critics Help Catch LLM Bugs (CriticGPT): independent critics beat human/self review.
+- **2310.01798** — Large Language Models Cannot Self-Correct Reasoning Yet.
+- **2509.17995** — Variation in Verification: self-critique collapses; external verification gains.
+- **2506.18203** — Shrinking the Generation-Verification Gap with Weak Verifiers.
+- **2508.06225** — Overconfidence in LLM-as-a-Judge: diagnosis + confidence-driven solution.
+- **2510.24020** — Teaching LLMs to Abstain via Fine-Grained Semantic Confidence.
+- **2506.11887** — Cascaded Language Models for Cost-effective Human-AI Decision-Making.
+- **2602.18447** — ConfSpec: confidence-gated verification.

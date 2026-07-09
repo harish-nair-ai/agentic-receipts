@@ -44,6 +44,32 @@ class Verdict(StrEnum):
     SKIPPED = "skipped"          # Claim too vague to verify
 
 
+class FactLabel(StrEnum):
+    """FEVER-style three-way verdict for a completion claim."""
+
+    SUPPORTED = "supported"              # evidence supports the claim
+    REFUTED = "refuted"                  # evidence contradicts the claim
+    NOT_ENOUGH_INFO = "not_enough_info"  # honest abstention — insufficient evidence
+
+
+class ScoreMethod(StrEnum):
+    """How a claim's calibrated score was produced."""
+
+    LOGPROB = "logprob"              # probability-weighted expectation over top_logprobs
+    SAMPLED = "sampled"              # averaged sampled scoring letters (no logprobs available)
+    DETERMINISTIC = "deterministic"  # decided by the hard-evidence fast-path, no LLM
+    NONE = "none"                    # no checker available — evidence-only / abstained
+
+
+def verdict_for_label(label: FactLabel) -> Verdict:
+    """Map the three-way FactLabel back to the legacy Verdict for back-compat storage."""
+    return {
+        FactLabel.SUPPORTED: Verdict.VERIFIED,
+        FactLabel.REFUTED: Verdict.REFUTED,
+        FactLabel.NOT_ENOUGH_INFO: Verdict.UNVERIFIED,
+    }[label]
+
+
 class EvidenceSource(StrEnum):
     """Where the evidence came from."""
 
@@ -93,6 +119,23 @@ class VerifiedClaim(BaseModel):
         description="Human-readable explanation of the verdict",
     )
 
+    # --- v2 calibrated fields (all optional for back-compat with v1 records) ---
+    label: FactLabel | None = Field(
+        default=None, description="Three-way calibrated verdict (v2)"
+    )
+    score: float | None = Field(
+        default=None, description="Calibrated 0-100 score for this claim (v2)"
+    )
+    confidence: float | None = Field(
+        default=None, description="0-1 confidence from cross-pass agreement + logprob dispersion"
+    )
+    per_criterion: dict[str, float] = Field(
+        default_factory=dict, description="Per-criterion 0-100 scores (weak-verifier ensemble)"
+    )
+    critique: str = Field(default="", description="Specific NL critique / evidence pointer")
+    method: ScoreMethod | None = Field(default=None, description="How the score was produced")
+    passes: int = Field(default=0, description="Number of scorer passes actually run (adaptive K)")
+
 
 class Receipt(BaseModel):
     """The full receipt for an agent session — the final output of the pipeline.
@@ -119,6 +162,10 @@ class Receipt(BaseModel):
     judge_model: str = Field(default="", description="Model used for the independent judge")
     judge_duration_ms: int = Field(
         default=0, description="Time spent on judge calls in milliseconds"
+    )
+    checker_independent: bool = Field(
+        default=True,
+        description="Whether checker model differed from the audited agent (maker≠checker)",
     )
 
     @property
@@ -153,6 +200,30 @@ class Receipt(BaseModel):
     def has_unverified(self) -> bool:
         """Whether any claims are unverified or refuted."""
         return self.unverified_count > 0 or self.refuted_count > 0
+
+    @property
+    def supported_count(self) -> int:
+        """Number of claims labeled SUPPORTED (v2)."""
+        return sum(1 for c in self.claims if c.label == FactLabel.SUPPORTED)
+
+    @property
+    def nei_count(self) -> int:
+        """Number of claims labeled NOT_ENOUGH_INFO (v2)."""
+        return sum(1 for c in self.claims if c.label == FactLabel.NOT_ENOUGH_INFO)
+
+    @property
+    def verified_done_score(self) -> float:
+        """Aggregate calibrated Verified-Done Score (0-100): mean of per-claim scores.
+
+        Falls back to the legacy fraction*100 when no calibrated scores are present.
+        Empty session → 100.0 (nothing claimed, nothing to doubt).
+        """
+        scored = [c.score for c in self.claims if c.score is not None]
+        if scored:
+            return sum(scored) / len(scored)
+        if self.total_claims == 0:
+            return 100.0
+        return self.score * 100.0
 
 
 class TranscriptEvent(BaseModel):

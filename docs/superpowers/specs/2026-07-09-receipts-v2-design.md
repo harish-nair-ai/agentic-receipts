@@ -1,4 +1,4 @@
-# Receipts v2 — Calibrated Verifier + Shareable Verified-Done Score
+# Receipts v2 — Calibrated Verifier + The AI Lie Detector
 
 **Status:** Approved (design) — 2026-07-09
 **Author:** Harish Nair S (with Claude)
@@ -15,20 +15,32 @@ arXiv **2607.05391** ("LLM-as-a-Verifier") contributes a genuinely useful core w
 - **Implemented & reusable:** continuous score from logprob expectation (Eq 3.1), score-granularity scale (A–T, 20 levels), repeated-evaluation averaging (K passes), criteria decomposition (coding triad: Specification / Output Match / Error-Signal Detection), and a Probabilistic Pivot Tournament (PPT) for cheap best-of-N ranking (Bradley-Terry pivots, O(Nk)).
 - **Paper-only / weak for us — dropped:** the RL reward-shaping section ships **zero** code; "TurboAgent" is a FastAPI reverse proxy (via `ANTHROPIC_BASE_URL`) that **multiplies inference cost by N** — not a real hook/plugin. We take neither.
 
-**Our unique wedge (not in the paper):** zero-config *consumer* distribution + the maker ≠ checker discipline + turning the calibrated score into a **shareable, viral object** (score card, badge, opt-in leaderboard). The paper builds a verifier for researchers; we build a verified-done *product* for every Claude Code user, and make the result worth posting.
+**Our unique wedge (not in the paper):** zero-config *consumer* distribution + maker ≠ checker discipline + a genuinely organic viral mechanic. The paper builds a verifier for researchers; we build a verified-done *product* for every coding-agent user — and we make the moment it fires inherently shareable.
+
+### Positioning: the AI lie detector (gotcha-forward)
+
+The viral object is **not** a personal score card (nobody screenshots their own report card) and **not** a user-vs-user leaderboard (vanity noise). Validated against how OpenClaw and HeyClicky actually went viral, the law is: *the shareable object is the product doing something jaw-dropping during real use, that the user captures because it makes them look interesting — never a badge we ask them to post.*
+
+Receipts' jaw-drop moment is **catching the AI lying, at the instant of maximum surprise** — riding the hottest current narrative ("AI agents confidently claim done, then haven't"). Two viral surfaces, both organic:
+
+1. **The "caught red-handed" receipt** — when a confident claim is refuted, the receipt is rendered as *evidence*, engineered to be screenshot-worthy. The hero cases are the claims **no script can check**: `Agent: "✅ Added input validation + improved error handling, done." → 🧾 REFUTED (score 18/100) — no try/except or validation added to the diff; the only new code is a print statement.` The calibrated scorer is what makes this a **defensible** accusation (every gotcha backed by evidence + a calibrated score), not a cheap dunk. Deterministic cases (`pytest exit 1`) are the *floor*, not the pitch — see §2.5.
+2. **The AI Agent Honesty Index** — aggregate, opt-in, **agent-vs-agent** leaderboard: which coding agents most often falsely claim "done" (Claude Code vs Cursor vs Copilot vs Codex …). A controversial *industry* stat people quote-tweet — an ongoing data-journalism story and a data moat (only Receipts watches real sessions). Never user-vs-user.
+
+Launch asset = a HeyClicky-style ~104-second clip: a real agent says "done, all green," Receipts instantly flashes ❌ REFUTED. Product copy and README carry the same lie-detector voice, kept credible by the evidence-first scoring.
 
 ### Goals
-- Replace the discrete judge with a **calibrated continuous score** per claim and an aggregate **Verified-Done Score (0–100)** per session, backed by the paper's scaling dimensions.
+- Replace the discrete judge with a **calibrated continuous score** per claim and an aggregate **Verified-Done Score (0–100)** per session, backed by the paper's scaling dimensions — the credibility engine behind every gotcha.
 - Preserve **zero-config**: if calibrated logprobs are unavailable, degrade gracefully to a sampled score — never crash, never require setup.
-- Make the score **shareable**: `receipts share` (PNG card), `receipts badge` (SVG), and **opt-in** `receipts publish` (aggregate-only) → lightweight hosted leaderboard.
+- Make the **refutation moment** shareable: `receipts share` (PNG "caught red-handed" receipt), `receipts badge` (SVG), and **opt-in** `receipts publish` (aggregate-only) feeding the **AI Agent Honesty Index**.
 - **Phase 2:** self-healing — on a refuted claim, generate candidate fixes, rank with PPT, present the winning diff, opt-in auto-apply.
 
 ### Non-Goals (YAGNI / explicitly dropped)
 - No RL / DSRL-SAC / GRPO reward shaping (no released code; out of product scope).
 - No reverse-proxy / `ANTHROPIC_BASE_URL` interception / cost-multiplying "turbo" mode.
-- No React/Vite dashboard. Terminal card + static leaderboard page only.
+- No React/Vite dashboard. Terminal card + static Honesty Index page only.
+- **No user-vs-user leaderboard, no "share your score" as the hook.** The score exists to make gotchas credible; virality comes from the refutation moment and the agent-vs-agent index.
 - No PyPI publish this cycle. No push to `main` — feature branch + PR only.
-- Leaderboard stores **aggregate numbers only**, never transcript content (see §7).
+- Honesty Index stores **aggregate numbers only**, never transcript content (see §7).
 
 ---
 
@@ -54,6 +66,21 @@ Phase 2 (self-healing):
 ```
 
 Maker ≠ checker is enforced at the scorer boundary: the checker model must differ from the agent under audit (Claude Code). Default checker is an OpenAI-compatible logprob-capable model, with Vertex-Gemini support; Anthropic is allowed only when the audited agent is not Anthropic.
+
+### 2.5 Why not just a native hook?
+
+Receipts *is* installed as a Claude Code Stop hook — the hook is the **delivery mechanism**, not the product. The obvious objection is "a 5-line `pytest --exit-code` hook already blocks on failing tests." True — and that is the *floor*, the deterministic ~20% of claims, not the pitch. The defensibility line:
+
+| | Naive self-check hook | **Receipts** |
+|---|---|---|
+| **Verifies…** | a thing *you* remembered to script | the **claims the agent actually made**, extracted per session |
+| **Fuzzy claims** ("refactored", "improved error handling", "added validation") | ❌ no exit code exists | ✅ calibrated independent auditor scores them |
+| **No test suite / unknown command** | ❌ nothing to run | ✅ claim-driven evidence matching still works |
+| **Independence** | maker == checker (agent self-certifies — the failure mode itself) | ✅ maker ≠ checker enforced |
+| **Aggregate signal** | invisible, per-project | ✅ cross-session/-agent **Honesty Index** |
+| **Setup** | write & maintain per repo | ✅ `pip install` + `receipts install`, zero-config, any repo |
+
+The unit of value is **the gap between what the agent said and what it did** — most of which (fuzzy claims, repos without tests, self-certification blind spots) no native hook can close. Receipts is the claim-auditing intelligence layer *on top of* the hook primitive.
 
 ---
 
@@ -114,13 +141,13 @@ Continuous score maps to glyphs for the card: `≥ 85` ✅ verified · `55–84`
 ### 3.6 Upgraded receipt card (`render.py`)
 Card shows the **Verified-Done Score: NN/100** in the header, per-claim continuous scores with glyph + one-line reason, per-criterion mini-bars for code claims, and a `method` tag (`calibrated` vs `sampled`). Keeps the existing Rich box aesthetic.
 
-### 3.7 Sharing & distribution
-- `receipts share [session]` → renders the receipt card to a **PNG** (self-contained, no card content leaves the machine unless the user posts it).
-- `receipts badge` → **SVG** badge (shields-style) of the rolling Verified-Done Score for READMEs.
-- `receipts publish` → **opt-in**, sends **aggregate numbers only** (score, verification rate, checker model name, claim/session counts) to a hosted leaderboard. **Never** sends transcript text, claim text, code, paths, or prompts. Requires an explicit first-run consent prompt; off by default.
+### 3.7 Sharing & distribution (gotcha-forward)
+- `receipts share [session]` → renders the **"caught red-handed" receipt** to a **PNG**, optimized as a social artifact: the agent's verbatim confident claim above the ❌ REFUTED verdict + score + the specific contradicting evidence. Prioritizes refuted fuzzy claims (the shareable ones) over deterministic ones. Self-contained; nothing leaves the machine unless the user posts it. This is the organic viral unit.
+- `receipts badge` → **SVG** badge (shields-style) for READMEs — but framed as an *honesty* signal (e.g. "verified-done", not a vanity number).
+- `receipts publish` → **opt-in**, sends **aggregate numbers only** — keyed by **audited-agent identity** (e.g. `claude-code`, `cursor`, `copilot`) — false-done rate, verification rate, checker model name, claim/session counts. **Never** sends transcript text, claim text, code, paths, or prompts. Explicit first-run consent; off by default. Feeds the Honesty Index (§3.8).
 
-### 3.8 Leaderboard (thin, static)
-Cloudflare Worker + KV store + a static HTML leaderboard page. Worker accepts the aggregate payload (validated, size-capped, no free-text pass-through), stores per-anonymous-id rolling aggregates, and serves a read-only ranked page. No accounts; an anonymous local id. This is the only server-side component; it is deliberately minimal.
+### 3.8 The AI Agent Honesty Index (thin, static, agent-vs-agent)
+Cloudflare Worker + KV store + a static HTML page ranking **coding agents by how often they falsely claim "done"** — never users. Worker accepts the aggregate payload (validated, size-capped, no free-text pass-through), aggregates per audited-agent identity across all opt-in contributors, and serves a read-only ranked "honesty leaderboard." No accounts; an anonymous local contributor id used only for dedup/rate-limiting, never displayed or ranked. This is the only server-side component and the data moat — an ongoing, quote-tweetable industry stat only Receipts can produce.
 
 ---
 
@@ -150,7 +177,7 @@ Triggered on a **refuted** claim (score below the refuted band or deterministic 
 - `RECEIPTS_SCORE_PASSES` (default 3) — K repeated passes.
 - `RECEIPTS_CHECKER_MODEL` / existing provider auto-detection — checker selection; enforce maker ≠ checker.
 - `RECEIPTS_AUTOFIX` (default 0) — Phase 2 opt-in apply.
-- `RECEIPTS_PUBLISH` / first-run consent — opt-in leaderboard.
+- `RECEIPTS_PUBLISH` / first-run consent — opt-in Honesty Index contribution.
 - `RECEIPTS_BLOCK` (existing) — block exit on unverified.
 - Fast mode (`K=1`, single criterion) for latency-sensitive users.
 
@@ -158,7 +185,7 @@ Triggered on a **refuted** claim (score below the refuted band or deterministic 
 
 ## 7. Privacy & Safety (hard constraints)
 - **Local-first.** All scoring and receipts are computed and stored locally. Nothing is transmitted unless the user runs an opt-in command.
-- **`publish` is aggregate-only.** Payload schema is a fixed set of numbers + the checker model name + an anonymous id. The Worker rejects any field outside the schema; there is no free-text field. Transcript, claim text, code, file paths, and prompts are **never** sent.
+- **`publish` is aggregate-only.** Payload schema is a fixed set of numbers + the audited-agent identity + the checker model name + an anonymous contributor id. The Worker rejects any field outside the schema; there is no free-text field. Transcript, claim text, code, file paths, and prompts are **never** sent. The audited-agent identity is a known enum (`claude-code`, `cursor`, …), not free text.
 - **Consent is explicit and off by default.** First `publish` requires an interactive opt-in; a config flag records it.
 - **maker ≠ checker** is enforced in code; the audited agent's provider cannot be the checker.
 - **No PyPI publish, no push to `main`** this cycle.
@@ -182,7 +209,7 @@ Token-heavy implementation is delegated to **Sonnet** agents on isolated branche
 - **Agent A (Sonnet):** `scorer.py` + Eq 3.1 math + `ScoreMethod` model changes + fallback ladder + scorer unit tests.
 - **Agent B (Sonnet):** `criteria.py` + `criteria/*.md` triad + combination logic + tests.
 - **Agent C (Sonnet):** `render.py` card upgrade + `share` (PNG) + `badge` (SVG) CLI.
-- **Agent D (Sonnet):** leaderboard Worker + KV + static page + `publish` opt-in client + privacy/schema tests.
+- **Agent D (Sonnet):** Honesty Index Worker + KV + static agent-vs-agent page + `publish` opt-in client (aggregate, agent-keyed) + privacy/schema tests.
 - **Agent E (Sonnet, Phase 2):** `pivot_tournament.py` + `retry.py` + self-healing flow + tests.
 - **Fable 5 checkpoint:** review calibrated-score correctness and maker≠checker/privacy enforcement before the PR; intervene on any stuck agent.
 

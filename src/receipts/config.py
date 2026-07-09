@@ -6,8 +6,17 @@ All configuration is via environment variables — zero config files, zero accou
 from __future__ import annotations
 
 import os
-from enum import StrEnum
+import sys
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Backport of StrEnum for Python 3.10."""
+        pass
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +69,11 @@ class Config(BaseModel):
         description="Directory to store receipt history",
     )
     timeout: int = Field(default=30, description="Judge API timeout in seconds")
+
+    @property
+    def api_url(self) -> str:
+        """Base API URL for the configured judge provider."""
+        return API_URLS[self.provider]
 
     @classmethod
     def from_env(cls) -> Config:

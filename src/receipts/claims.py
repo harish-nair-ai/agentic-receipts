@@ -7,12 +7,24 @@ import re
 from receipts.models import Claim, ClaimType
 
 
+# Patterns mapped to claim types. Each pattern should have meaningful capture groups.
+_CLAIM_PATTERNS: list[tuple[str, ClaimType]] = [
+    (r"((?:all\s+\d+\s+)?tests?\s+pass(?:es|ed)?|test\s+suite\s+pass(?:es|ed)?)", ClaimType.TEST_PASS),
+    (r"(created|added)\s+(?:file\s+)?([a-zA-Z0-9_./-]+)", ClaimType.FILE_CREATED),
+    (r"(modified|updated|changed)\s+(?:file\s+)?([a-zA-Z0-9_./-]+)", ClaimType.FILE_MODIFIED),
+    (r"(fixed|resolved)\s+(?:the\s+|a\s+)?(bug|issue|error|TypeError|ValueError|KeyError|Exception|crash)", ClaimType.BUG_FIXED),
+    (r"(implemented|added\s+support\s+for|added\s+feature)\s+([a-zA-Z0-9_ -]+)", ClaimType.FEATURE_ADDED),
+    (r"(ran|executed)\s+(?:the\s+)?(command|migration|build|script)", ClaimType.COMMAND_RUN),
+    (r"(refactored|cleaned\s+up)\s+([a-zA-Z0-9_ -]+)", ClaimType.REFACTORED),
+]
+
+
 def extract_claims(final_message: str) -> list[Claim]:
     """Extract completion claims from the agent's final message.
 
     Uses a two-phase extraction:
-    1. Regex/heuristic pass for common patterns.
-    2. Fallback to sentence splitting if heuristics find nothing.
+    1. Regex/heuristic pass for common patterns (finditer for multiple matches).
+    2. Fallback to "done" indicators if heuristics find nothing.
 
     Args:
         final_message: The agent's final message.
@@ -21,42 +33,26 @@ def extract_claims(final_message: str) -> list[Claim]:
         List of extracted claims.
     """
     claims: list[Claim] = []
-    
+    seen_texts: set[str] = set()
+
     # Clean markdown
     clean_msg = _strip_markdown(final_message)
-    
-    # Phase 1: Regex heuristics
-    test_match = re.search(r"(tests? pass|test suite passes|all \d+ tests? pass)", clean_msg, re.IGNORECASE)
-    if test_match:
-        claims.append(Claim(text=test_match.group(0), claim_type=ClaimType.TEST_PASS))
-        
-    file_create_match = re.search(r"(created|added) (file )?([a-zA-Z0-9_./-]+)", clean_msg, re.IGNORECASE)
-    if file_create_match:
-        claims.append(Claim(text=file_create_match.group(0), claim_type=ClaimType.FILE_CREATED))
-        
-    file_mod_match = re.search(r"(modified|updated|changed) (file )?([a-zA-Z0-9_./-]+)", clean_msg, re.IGNORECASE)
-    if file_mod_match:
-        claims.append(Claim(text=file_mod_match.group(0), claim_type=ClaimType.FILE_MODIFIED))
-        
-    bug_match = re.search(r"(fixed|resolved) (the |a )?(bug|issue|error|TypeError|ValueError|Exception)", clean_msg, re.IGNORECASE)
-    if bug_match:
-        claims.append(Claim(text=bug_match.group(0), claim_type=ClaimType.BUG_FIXED))
-        
-    feature_match = re.search(r"(implemented|added support for|added feature) ([a-zA-Z0-9_ -]+)", clean_msg, re.IGNORECASE)
-    if feature_match:
-        claims.append(Claim(text=feature_match.group(0), claim_type=ClaimType.FEATURE_ADDED))
-        
-    cmd_match = re.search(r"(ran|executed) (the )?(command|migration|build)", clean_msg, re.IGNORECASE)
-    if cmd_match:
-        claims.append(Claim(text=cmd_match.group(0), claim_type=ClaimType.COMMAND_RUN))
-        
-    refactor_match = re.search(r"(refactored|cleaned up) ([a-zA-Z0-9_ -]+)", clean_msg, re.IGNORECASE)
-    if refactor_match:
-        claims.append(Claim(text=refactor_match.group(0), claim_type=ClaimType.REFACTORED))
-        
+
+    # Phase 1: Regex heuristics (finditer catches ALL occurrences)
+    for pattern, claim_type in _CLAIM_PATTERNS:
+        for match in re.finditer(pattern, clean_msg, re.IGNORECASE):
+            text = match.group(0).strip()
+            if text not in seen_texts:
+                seen_texts.add(text)
+                claims.append(Claim(text=text, claim_type=claim_type))
+
     # Phase 2: Fallback (if no explicit claims found, look for "done" indicators)
     if not claims:
-        done_match = re.search(r"(I have finished|I'm done|task is complete|all done)", clean_msg, re.IGNORECASE)
+        done_match = re.search(
+            r"(I have finished|I'm done|task is complete|all done|completed successfully)",
+            clean_msg,
+            re.IGNORECASE,
+        )
         if done_match:
             claims.append(Claim(text="Task completed", claim_type=ClaimType.GENERIC))
 

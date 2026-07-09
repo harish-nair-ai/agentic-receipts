@@ -31,6 +31,10 @@ class ClaudeCodeAdapter(TranscriptAdapter):
         if not transcript_path.exists():
             return ParsedTranscript(session_id=session_id)
 
+        # Track the last tool_use so we can correlate tool_results with their tool
+        last_tool_name: str | None = None
+        last_tool_input: dict | None = None
+
         # Stream line by line to handle large transcripts
         with transcript_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -47,43 +51,57 @@ class ClaudeCodeAdapter(TranscriptAdapter):
                 if not event_type:
                     continue
 
-                content = self._extract_content(data.get("content"))
+                content_text = self._extract_content(data.get("content"))
                 timestamp = data.get("timestamp", "")
-                
+
                 # Extract user request (first user message)
                 if event_type == "user" and not user_request:
-                    user_request = content
+                    user_request = content_text
 
                 # Track final assistant message
-                if event_type == "assistant" and content:
-                    final_message = content
+                if event_type == "assistant" and content_text:
+                    final_message = content_text
 
-                tool_name = None
-                tool_input = None
-                exit_code = None
-                file_path = None
+                tool_name: str | None = None
+                tool_input: dict | None = None
+                exit_code: int | None = None
+                file_path: str | None = None
 
                 if event_type == "tool_use":
                     tool_name = data.get("name")
                     tool_input = data.get("input")
                     if tool_input and isinstance(tool_input, dict):
-                        file_path = tool_input.get("file_path") or tool_input.get("path")
-                
+                        file_path = (
+                            tool_input.get("file_path")
+                            or tool_input.get("path")
+                            or tool_input.get("TargetFile")
+                            or tool_input.get("AbsolutePath")
+                        )
+                    # Stash for correlation with the next tool_result
+                    last_tool_name = tool_name
+                    last_tool_input = tool_input
+
                 elif event_type == "tool_result":
-                    # Sometimes Claude Code nests these
-                    if isinstance(content, list) and len(content) > 0:
-                        first_content = content[0]
-                        if isinstance(first_content, dict):
-                             # Look for exit codes in output if available or infer from is_error
-                             if data.get("is_error"):
-                                 exit_code = 1
-                             else:
-                                 exit_code = 0
+                    # Correlate with the preceding tool_use
+                    tool_name = last_tool_name
+                    tool_input = last_tool_input
+
+                    # Determine exit code from raw content or is_error flag
+                    raw_content = data.get("content")
+                    if data.get("is_error"):
+                        exit_code = 1
+                    elif raw_content is not None:
+                        # If there's content and no error flag, infer success
+                        exit_code = 0
+
+                    # Reset correlation state
+                    last_tool_name = None
+                    last_tool_input = None
 
                 event = TranscriptEvent(
                     event_type=event_type,
                     timestamp=timestamp,
-                    content=content if isinstance(content, str) else json.dumps(content),
+                    content=content_text,
                     tool_name=tool_name,
                     tool_input=tool_input,
                     exit_code=exit_code,
@@ -103,10 +121,8 @@ class ClaudeCodeAdapter(TranscriptAdapter):
         if not self.projects_dir.exists():
             return None
 
-        jsonl_files: list[Path] = []
-        for project_dir in self.projects_dir.iterdir():
-            if project_dir.is_dir():
-                jsonl_files.extend(project_dir.glob("*.jsonl"))
+        # Use rglob for deeper nesting (Claude Code may have sub-directories)
+        jsonl_files = list(self.projects_dir.rglob("*.jsonl"))
 
         if not jsonl_files:
             return None
@@ -114,12 +130,12 @@ class ClaudeCodeAdapter(TranscriptAdapter):
         # Sort by modification time, descending
         latest_file = max(jsonl_files, key=lambda p: p.stat().st_mtime)
         return latest_file
-        
+
     def _extract_content(self, content: Any) -> str:
         """Extract text content from Claude Code's block format."""
         if isinstance(content, str):
             return content
-            
+
         if isinstance(content, list):
             texts = []
             for block in content:
@@ -127,5 +143,5 @@ class ClaudeCodeAdapter(TranscriptAdapter):
                     if block.get("type") == "text" and "text" in block:
                         texts.append(block["text"])
             return "\n".join(texts)
-            
+
         return ""

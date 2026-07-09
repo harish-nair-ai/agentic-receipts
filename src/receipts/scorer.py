@@ -9,7 +9,13 @@ Implements the base paper's Eq 3.1 (mirrors fine_grained_reward.py::extract_scor
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from statistics import pstdev
+
+import httpx
+
+from receipts.config import Config, JudgeProvider
+from receipts.models import ScoreMethod
 
 G = 20
 SCORE_LETTERS = "ABCDEFGHIJKLMNOPQRST"  # 20 ordinal levels, A = fully refuted, T = fully supported
@@ -72,3 +78,192 @@ def sampled_peakiness(letters: list[str]) -> float:
     if len(values) < 2:
         return 1.0
     return 1.0 - min(1.0, 2.0 * pstdev(values))
+
+
+_SAMPLED_N = 5  # sampled-fallback: number of scoring letters to draw per pass
+
+_SCORE_INSTRUCTION = (
+    "You are an independent auditor scoring whether an AI coding agent's claim is "
+    "supported by the transcript evidence. Respond with EXACTLY ONE letter on the "
+    f"scale {SCORE_LETTERS[0]}-{SCORE_LETTERS[-1]}, where {SCORE_LETTERS[0]} means the "
+    "claim is fully REFUTED by the evidence and "
+    f"{SCORE_LETTERS[-1]} means it is fully SUPPORTED. Output only the single letter."
+)
+
+
+@dataclass
+class ScorePass:
+    """One calibrated scoring pass over a single criterion."""
+
+    score01: float          # 0..1 calibrated score
+    peakiness: float        # 0..1 distribution concentration (confidence proxy)
+    method: ScoreMethod     # LOGPROB or SAMPLED
+    letter: str             # modal / representative scoring letter
+
+
+def score_pass(prompt: str, config: Config) -> ScorePass | None:
+    """Run one calibrated scoring call. Returns None on failure (caller degrades)."""
+    full = f"{_SCORE_INSTRUCTION}\n\n{prompt}\n\nScore (single letter only):"
+    try:
+        if config.supports_logprobs and config.provider == JudgeProvider.OPENAI:
+            return _score_logprob_openai(full, config)
+        if config.supports_logprobs and config.provider == JudgeProvider.GEMINI:
+            return _score_logprob_gemini(full, config)
+        return _score_sampled(full, config)
+    except Exception:
+        return None
+
+
+def _score_logprob_openai(prompt: str, config: Config) -> ScorePass | None:
+    url = f"{config.api_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": config.checker_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 1,
+        "logprobs": True,
+        "top_logprobs": 20,
+    }
+    with httpx.Client(timeout=config.timeout) as client:
+        resp = client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    content = data["choices"][0]["logprobs"]["content"][0]
+    logprobs = {alt["token"]: alt["logprob"] for alt in content["top_logprobs"]}
+    return _pass_from_logprobs(logprobs, content.get("token", ""))
+
+
+def _score_logprob_gemini(prompt: str, config: Config) -> ScorePass | None:
+    url = f"{config.api_url}/models/{config.checker_model}:generateContent?key={config.api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 1,
+            "responseLogprobs": True,
+            "logprobs": 20,
+        },
+    }
+    with httpx.Client(timeout=config.timeout) as client:
+        resp = client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    # Gemini returns logprobsResult.topCandidates[0].candidates: [{token, logProbability}]
+    top = data["candidates"][0]["logprobsResult"]["topCandidates"][0]["candidates"]
+    logprobs = {c["token"]: c["logProbability"] for c in top}
+    chosen = data["candidates"][0]["logprobsResult"]["chosenCandidates"][0]["token"]
+    return _pass_from_logprobs(logprobs, chosen)
+
+
+def _pass_from_logprobs(logprobs: dict[str, float], chosen: str) -> ScorePass | None:
+    score01 = expected_score01(logprobs)
+    if score01 is None:
+        return None
+    return ScorePass(
+        score01=score01,
+        peakiness=peakiness(logprobs),
+        method=ScoreMethod.LOGPROB,
+        letter=(chosen.strip().upper()[:1] or "?"),
+    )
+
+
+def _score_sampled(prompt: str, config: Config) -> ScorePass | None:
+    """No logprobs available: sample the scoring letter a few times and average."""
+    letters: list[str] = []
+    for _ in range(_SAMPLED_N):
+        letter = _sample_one_letter(prompt, config)
+        if letter:
+            letters.append(letter)
+    score01 = sampled_score01(letters)
+    if score01 is None:
+        return None
+    return ScorePass(
+        score01=score01,
+        peakiness=sampled_peakiness(letters),
+        method=ScoreMethod.SAMPLED,
+        letter=(letters[0] if letters else "?"),
+    )
+
+
+def _sample_one_letter(prompt: str, config: Config) -> str:
+    """One low-temperature sample of a single scoring letter (Anthropic path)."""
+    url = f"{config.api_url}/messages"
+    headers = {
+        "x-api-key": config.api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": config.checker_model,
+        "max_tokens": 1,
+        "temperature": 0.7,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    with httpx.Client(timeout=config.timeout) as client:
+        resp = client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    text = data["content"][0]["text"].strip().upper()
+    return text[:1] if text else ""
+
+
+def generate_critique(
+    claim_text: str, evidence_text: str, transcript_context: str, label: str, config: Config
+) -> str:
+    """One short natural-language critique naming the deciding evidence. '' on failure."""
+    prompt = (
+        "You are an independent auditor. In ONE sentence, state the specific transcript "
+        f"evidence that makes the following claim '{label}'. Name the concrete signal "
+        "(command, exit code, file, or its absence). Do not hedge.\n\n"
+        f"CLAIM: {claim_text}\n\nDETERMINISTIC EVIDENCE:\n{evidence_text}\n\n"
+        f"TRANSCRIPT:\n{transcript_context[:2000]}\n\nOne-sentence critique:"
+    )
+    try:
+        return _critique_call(prompt, config).strip()
+    except Exception:
+        return ""
+
+
+def _critique_call(prompt: str, config: Config) -> str:
+    """Provider-agnostic short text completion for the critique."""
+    if config.provider == JudgeProvider.OPENAI:
+        url = f"{config.api_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": config.checker_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "max_tokens": 120,
+        }
+        with httpx.Client(timeout=config.timeout) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+    if config.provider == JudgeProvider.GEMINI:
+        url = f"{config.api_url}/models/{config.checker_model}:generateContent?key={config.api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 120},
+        }
+        with httpx.Client(timeout=config.timeout) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    # Anthropic
+    url = f"{config.api_url}/messages"
+    headers = {
+        "x-api-key": config.api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": config.checker_model,
+        "max_tokens": 120,
+        "temperature": 0.0,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    with httpx.Client(timeout=config.timeout) as client:
+        resp = client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]

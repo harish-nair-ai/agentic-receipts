@@ -135,6 +135,10 @@ class VerifiedClaim(BaseModel):
     critique: str = Field(default="", description="Specific NL critique / evidence pointer")
     method: ScoreMethod | None = Field(default=None, description="How the score was produced")
     passes: int = Field(default=0, description="Number of scorer passes actually run (adaptive K)")
+    proposed_fix: str = Field(default="", description="Phase 2: winning candidate diff (if any)")
+    fix_applied: bool = Field(
+        default=False, description="Phase 2: whether the fix was auto-applied"
+    )
 
 
 class Receipt(BaseModel):

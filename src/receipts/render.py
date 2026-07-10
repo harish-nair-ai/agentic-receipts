@@ -69,6 +69,12 @@ def render_receipt(receipt: Receipt, file: TextIO = sys.stderr) -> None:
             body.append(f"[{score_str}/100 · {tag}]\n", style="dim")
             if vc.critique:
                 body.append(f"     └─ {vc.critique}\n", style="dim")
+            if getattr(vc, "proposed_fix", ""):
+                status = (
+                    "applied" if vc.fix_applied
+                    else "proposed (run with RECEIPTS_AUTOFIX=1 to apply)"
+                )
+                body.append(f"     🔧 fix {status}\n", style="cyan")
             for name, cscore in (vc.per_criterion or {}).items():
                 body.append(
                     f"        {name:<14} {_bar(cscore / 100.0)} {cscore:.0f}\n", style="dim"

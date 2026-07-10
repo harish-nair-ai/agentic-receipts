@@ -8,8 +8,9 @@ from pathlib import Path
 
 from receipts.claims import extract_claims
 from receipts.config import Config
-from receipts.models import Receipt, VerifiedClaim, verdict_for_label
+from receipts.models import FactLabel, Receipt, VerifiedClaim, verdict_for_label
 from receipts.render import render_receipt
+from receipts.retry import apply_fix, propose_fix
 from receipts.stats import save_receipt
 from receipts.transcript import parse_transcript
 from receipts.verifier import ClaimVerdict, verify_session
@@ -60,6 +61,26 @@ def verdict_to_verified_claim(cv: ClaimVerdict) -> VerifiedClaim:
     )
 
 
+def maybe_propose_fixes(
+    verified_claims: list[VerifiedClaim], transcript_context: str, config: Config
+) -> None:
+    """Phase 2: for each REFUTED claim, propose a fix; apply only under RECEIPTS_AUTOFIX."""
+    for vc in verified_claims:
+        if vc.label != FactLabel.REFUTED:
+            continue
+        cv = ClaimVerdict(
+            claim=vc.claim, label=vc.label, score=vc.score or 0.0,
+            confidence=vc.confidence or 0.0, per_criterion=vc.per_criterion,
+            critique=vc.critique, method=vc.method, passes=vc.passes, evidence=vc.evidence,
+        )
+        fix = propose_fix(cv, transcript_context, config)
+        if fix is None:
+            continue
+        vc.proposed_fix = fix.diff
+        if config.autofix:
+            vc.fix_applied = apply_fix(fix)
+
+
 def process_transcript(transcript_path: Path, config: Config) -> int:
     """Process a transcript and return an exit code."""
     try:
@@ -77,6 +98,7 @@ def process_transcript(transcript_path: Path, config: Config) -> int:
         transcript_context = _build_transcript_context(transcript)
         report = verify_session(claims, transcript, transcript_context, config)
         verified_claims = [verdict_to_verified_claim(cv) for cv in report.verdicts]
+        maybe_propose_fixes(verified_claims, transcript_context, config)
 
         # 4. Generate receipt
         receipt = Receipt(

@@ -43,6 +43,23 @@ API_URLS: dict[JudgeProvider, str] = {
     JudgeProvider.ANTHROPIC: "https://api.anthropic.com/v1",
 }
 
+# Which provider family an audited agent belongs to (for maker≠checker enforcement).
+AGENT_PROVIDER_FAMILY: dict[str, JudgeProvider] = {
+    "claude-code": JudgeProvider.ANTHROPIC,
+    "claude": JudgeProvider.ANTHROPIC,
+    "codex": JudgeProvider.OPENAI,
+    "cursor": JudgeProvider.OPENAI,  # unknown/mixed; treated as OpenAI-family by default
+}
+
+# Provider tokens used to infer an unregistered agent's family from its name, so an
+# unrecognized alias of the audited model (e.g. "claude-4", "gpt-5-agent") cannot grade
+# itself. Only a genuinely provider-less name stays "assumed independent".
+_PROVIDER_HINTS: dict[JudgeProvider, tuple[str, ...]] = {
+    JudgeProvider.ANTHROPIC: ("claude", "anthropic"),
+    JudgeProvider.OPENAI: ("gpt", "codex", "openai", "o1", "o3", "o4"),
+    JudgeProvider.GEMINI: ("gemini", "google", "bard"),
+}
+
 
 class Config(BaseModel):
     """Receipts configuration, resolved from environment variables.
@@ -69,11 +86,27 @@ class Config(BaseModel):
         description="Directory to store receipt history",
     )
     timeout: int = Field(default=30, description="Judge API timeout in seconds")
+    score_passes: int = Field(default=3, description="K_max for adaptive scorer escalation")
+    min_confidence: float = Field(default=0.6, description="Abstention threshold (0-1)")
+    checker_model_override: str = Field(
+        default="", description="Explicit checker model (RECEIPTS_CHECKER_MODEL)"
+    )
+    autofix: bool = Field(default=False, description="Phase 2 opt-in: auto-apply winning fix")
 
     @property
     def api_url(self) -> str:
         """Base API URL for the configured judge provider."""
         return API_URLS[self.provider]
+
+    @property
+    def checker_model(self) -> str:
+        """The model used as the independent checker (falls back to `model`)."""
+        return self.checker_model_override or self.model
+
+    @property
+    def supports_logprobs(self) -> bool:
+        """Whether the configured provider can return top_logprobs for calibrated scoring."""
+        return self.provider in (JudgeProvider.GEMINI, JudgeProvider.OPENAI)
 
     @classmethod
     def from_env(cls) -> Config:
@@ -91,6 +124,10 @@ class Config(BaseModel):
         block = os.environ.get("RECEIPTS_BLOCK", "0").strip() == "1"
         receipts_dir = os.environ.get("RECEIPTS_DIR", "").strip()
         timeout = int(os.environ.get("RECEIPTS_TIMEOUT", "30"))
+        score_passes = max(1, int(os.environ.get("RECEIPTS_SCORE_PASSES", "3")))
+        min_confidence = min(1.0, max(0.0, float(os.environ.get("RECEIPTS_MIN_CONFIDENCE", "0.6"))))
+        checker_model_override = os.environ.get("RECEIPTS_CHECKER_MODEL", "").strip()
+        autofix = os.environ.get("RECEIPTS_AUTOFIX", "0").strip() == "1"
 
         # Resolve provider and API key
         provider: JudgeProvider | None = None
@@ -103,7 +140,7 @@ class Config(BaseModel):
                 raise ConfigError(
                     f"Unknown provider '{explicit_provider}'. "
                     f"Supported: {', '.join(p.value for p in JudgeProvider)}"
-                )
+                ) from None
             api_key = _get_api_key(provider)
             if not api_key:
                 raise ConfigError(
@@ -138,11 +175,40 @@ class Config(BaseModel):
             block_on_unverified=block,
             receipts_dir=Path(receipts_dir) if receipts_dir else Path.home() / ".receipts",
             timeout=timeout,
+            score_passes=score_passes,
+            min_confidence=min_confidence,
+            checker_model_override=checker_model_override,
+            autofix=autofix,
         )
 
 
 class ConfigError(Exception):
     """Raised when Receipts configuration is invalid or missing."""
+
+
+def _infer_agent_family(agent: str) -> JudgeProvider | None:
+    """Resolve an agent name to a provider family: exact registry, then token inference."""
+    a = agent.lower()
+    family = AGENT_PROVIDER_FAMILY.get(a)
+    if family is not None:
+        return family
+    for provider, hints in _PROVIDER_HINTS.items():
+        if any(hint in a for hint in hints):
+            return provider
+    return None
+
+
+def check_independence(config: Config, agent: str) -> bool:
+    """True when the checker's provider differs from the audited agent's provider family.
+
+    Unregistered aliases of a known provider (e.g. "claude-4") are inferred from their
+    name so the audited model cannot grade itself. Only a genuinely provider-less name is
+    assumed independent — we cannot prove overlap we cannot see.
+    """
+    family = _infer_agent_family(agent)
+    if family is None:
+        return True
+    return config.provider != family
 
 
 def _get_api_key(provider: JudgeProvider) -> str | None:

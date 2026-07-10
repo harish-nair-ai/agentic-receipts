@@ -57,6 +57,9 @@ receipts = "receipts.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/receipts"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/receipts/criteria" = "receipts/criteria"
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100

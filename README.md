@@ -19,7 +19,7 @@
 
 ---
 
-> **The problem:** AI coding agents confidently claim "Done! All tests pass!" — but ~47% of the time, they haven't actually verified their own claims. You don't find out until three tasks are stacked on top and everything breaks.
+> **The problem:** AI coding agents confidently claim "Done! All tests pass!" — but a 20,574-session study found **22.58% of agent misalignment episodes are inaccurate self-reporting** (arXiv 2605.29442): the agent claims success without having verified it. You don't find out until three tasks are stacked on top and everything breaks.
 
 ## Quick Start
 

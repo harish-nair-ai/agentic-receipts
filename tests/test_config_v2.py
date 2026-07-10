@@ -50,5 +50,13 @@ def test_check_independence():
     assert check_independence(_cfg(JudgeProvider.ANTHROPIC), "claude-code") is False
     # Gemini checker auditing Claude Code → independent.
     assert check_independence(_cfg(JudgeProvider.GEMINI), "claude-code") is True
-    # Unknown agent → assume independent (can't prove overlap).
+    # Truly-unknown agent → assume independent (can't prove overlap).
     assert check_independence(_cfg(JudgeProvider.ANTHROPIC), "some-other-agent") is True
+    # Unregistered *alias* of the audited provider must NOT be able to grade itself
+    # (fix from Fable calibration review: infer family from provider tokens).
+    assert check_independence(_cfg(JudgeProvider.ANTHROPIC), "claude-4") is False
+    assert check_independence(_cfg(JudgeProvider.ANTHROPIC), "anthropic-cli") is False
+    assert check_independence(_cfg(JudgeProvider.OPENAI), "gpt-5-agent") is False
+    assert check_independence(_cfg(JudgeProvider.GEMINI), "gemini-3-pro") is False
+    # A checker on a different provider than the inferred alias stays independent.
+    assert check_independence(_cfg(JudgeProvider.GEMINI), "claude-4") is True

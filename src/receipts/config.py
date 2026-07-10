@@ -51,6 +51,15 @@ AGENT_PROVIDER_FAMILY: dict[str, JudgeProvider] = {
     "cursor": JudgeProvider.OPENAI,  # unknown/mixed; treated as OpenAI-family by default
 }
 
+# Provider tokens used to infer an unregistered agent's family from its name, so an
+# unrecognized alias of the audited model (e.g. "claude-4", "gpt-5-agent") cannot grade
+# itself. Only a genuinely provider-less name stays "assumed independent".
+_PROVIDER_HINTS: dict[JudgeProvider, tuple[str, ...]] = {
+    JudgeProvider.ANTHROPIC: ("claude", "anthropic"),
+    JudgeProvider.OPENAI: ("gpt", "codex", "openai", "o1", "o3", "o4"),
+    JudgeProvider.GEMINI: ("gemini", "google", "bard"),
+}
+
 
 class Config(BaseModel):
     """Receipts configuration, resolved from environment variables.
@@ -177,12 +186,26 @@ class ConfigError(Exception):
     """Raised when Receipts configuration is invalid or missing."""
 
 
+def _infer_agent_family(agent: str) -> JudgeProvider | None:
+    """Resolve an agent name to a provider family: exact registry, then token inference."""
+    a = agent.lower()
+    family = AGENT_PROVIDER_FAMILY.get(a)
+    if family is not None:
+        return family
+    for provider, hints in _PROVIDER_HINTS.items():
+        if any(hint in a for hint in hints):
+            return provider
+    return None
+
+
 def check_independence(config: Config, agent: str) -> bool:
     """True when the checker's provider differs from the audited agent's provider family.
 
-    Unknown agents are assumed independent — we cannot prove model overlap.
+    Unregistered aliases of a known provider (e.g. "claude-4") are inferred from their
+    name so the audited model cannot grade itself. Only a genuinely provider-less name is
+    assumed independent — we cannot prove overlap we cannot see.
     """
-    family = AGENT_PROVIDER_FAMILY.get(agent.lower())
+    family = _infer_agent_family(agent)
     if family is None:
         return True
     return config.provider != family
